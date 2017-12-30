@@ -76,7 +76,7 @@ int main()
 	signal(SIGCHLD, waitfor);
 	int serv_tcp_port = SERV_TCP_PORT;
 	struct sockaddr_in cli_addr, serv_addr;
-	int sock = socket(AF_INET, SOCK_STREAM, 0);
+	int sock = socket(PF_INET, SOCK_STREAM, 0);
 	if(sock < 0)
 	{
 		cout << "[ERR] Cannot open socket" << endl;
@@ -164,7 +164,8 @@ int main()
 			}
 			stringstream ss;
 			for(int i = 0; i < 4; i++)ss << (i? ".": "") << destip[i];
-			cout << ss.str() << endl;
+			cout << ss.str();
+			cout << endl;
 			if(permission)cout << "[LOG] Request approved" << endl;
 			else cout << "[LOG] Request denied" << endl;
 			int userid = 0;
@@ -173,66 +174,119 @@ int main()
 				userid *= 256;
 				userid += packet[cursor++];
 			}
-			cout << "[LOG] User id: " << userid << endl;
+			cout << "[LOG] User id: " << userid << endl << endl;
 			unsigned char reply[1024] = {};
 			cursor = 0;
 			reply[cursor++] = 0;
 			reply[cursor++] = 90 + !permission;
 			reply[cursor++] = destport / 256;
 			reply[cursor++] = destport % 256;
+//			stringstream sp;
+//			sp << destport;
 			for(int i = 0; i < 4; i++)reply[cursor++] = destip[i];
 			write(newsock, reply, 8);
-			if(!permission)return 0;
+			if(!permission)
+			{
+				close(newsock);
+				return 0;
+			}
 			struct sockaddr_in connect_addr;
 			bzero((char *) &connect_addr, sizeof(connect_addr));
 			connect_addr.sin_family = AF_INET;
 			connect_addr.sin_addr.s_addr = inet_addr(ss.str().c_str());
 			connect_addr.sin_port = htons(destport);
-			int connectfd = socket(AF_INET, SOCK_STREAM, 0);
+			int connectfd = socket(PF_INET, SOCK_STREAM, 0);
+			int flag = fcntl(newsock, F_GETFL, 0);
+			fcntl(newsock, F_SETFL, flag | O_NONBLOCK);
+			flag = fcntl(connectfd, F_GETFL, 0);
+			fcntl(connectfd, F_SETFL, flag | O_NONBLOCK);
 			if(connectfd < 0)
 			{
 				cout << "[ERR] Cannot open web-server socket" << endl;
 				return 0;
 			}
-			while(connect(connectfd, (struct sockaddr *)&connect_addr, sizeof(connect_addr)) < 0)cout << "[ERR] Cannot connect to web-server " << errno << endl;
-			int nfds = getdtablesize();
-			fd_set rfds, afds;
-			FD_ZERO(&afds);
-			FD_SET(newsock, &afds);
-			FD_SET(connectfd, &afds);
-			char buffer[1024];
-			int size = 0;
+			if(connect(connectfd, (struct sockaddr *)&connect_addr, sizeof(connect_addr)) < 0 && errno != EINPROGRESS)
+			{
+				cout << "[ERR] Cannot connect to web-server " << errno << endl;
+				return 0;
+			}
+			//int k, error;
+			cout << "[LOG] Connecting..." << endl;
+			int nfds = FD_SETSIZE;
+			fd_set rfds;
+			FD_ZERO(&rfds);
+			FD_SET(newsock, &rfds);
+			FD_SET(connectfd, &rfds);
+			int state = 0;
+			int time = 0;
 			while(1)
 			{
-				memcpy(&rfds, &afds, sizeof(&rfds));
-				if(select(nfds, &rfds, NULL, NULL, 0) < 0)
+				if(state == 0)
 				{
-					cout << "[ERR] select error" << endl;
-					return 0;
-				}
-				if(FD_ISSET(newsock, &rfds))
-				{
-					bzero(buffer, 1024);
-					size = read(newsock, buffer, 1024);
-					if(size == 0)
+					if(select(nfds, &rfds, NULL, NULL, NULL) < 0)
 					{
-						cout << "[LOG] Client side ended" << endl;
-						break;
+						cout << "[ERR] Select error" << endl;
+						return 0;
 					}
-					else if(size == -1)cout << "[ERR] Client read error:" << errno << endl;
-					else size = write(connectfd, buffer, size);
-				}
-				if(FD_ISSET(connectfd, &rfds))
-				{
-					bzero(buffer, 1024);
-					size = read(connectfd, buffer, 1024);
-					if(size == 0)
+					int error, k;
+					if(getsockopt(connectfd, SOL_SOCKET, SO_ERROR, &error, (unsigned int *)&k) < 0 || error != 0)
 					{
-						cout << "[LOG] Client side ended" << endl;
-						break;
+						cout << "[ERR] Connection error" << endl;
+						return 0;
 					}
-					else if(size == -1)cout << "[ERR] Client read error:" << errno << endl;
-					else size = write(newsock, buffer, size);
+					else 
+					{
+						cout << "[LOG] Connection established" << endl;
+						state = 1;
+					}
+				}
+				else
+				{
+					char sigpacket[1024 * 1024] = {};
+					int ans = read(newsock, sigpacket, 1024 * 1024);
+					if(ans > 0)
+					{
+						state = 2;
+						cout << "[LOG] Browser packet" << endl;
+						cout << sigpacket << endl;
+						int wcursor = 0;
+						while(1)
+						{
+							int wans = write(connectfd, sigpacket + wcursor, ans - wcursor);
+							//cout << (int)(sigpacket + wcursor)[0] << endl;
+							if(wans > 0)wcursor += wans;
+							if(wcursor >= ans)break;
+						}
+					}
+					ans = read(connectfd, sigpacket, 1024 * 1024);
+					if(ans < 0 && errno == EAGAIN)
+					{
+						cout << "[LOG] TIME = " << time << endl;
+						if(state == 3)
+						{
+							time++;
+							if(time >= 1000)break;
+						}
+						else
+						{
+							state = 3;
+							time = 0;
+						}
+					}
+					if(ans > 0)
+					{
+						cout << "[LOG] Web server packet" << endl;
+						cout << sigpacket << endl;
+						int wcursor = 0;
+						while(1)
+						{
+							int wans = write(newsock, sigpacket + wcursor, ans - wcursor);
+							//cout << (int)(sigpacket + wcursor)[0] << endl;
+							if(wans > 0)wcursor += wans;
+							if(wcursor >= ans)break;
+						}
+					}
+					//else if(ans < 0 && errno != EINTR && errno != EAGAIN)break;
 				}
 			}
 			close(connectfd);
