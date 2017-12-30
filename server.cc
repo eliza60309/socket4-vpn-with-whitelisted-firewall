@@ -32,6 +32,11 @@ void waitfor(int sig)
 	int pid = wait(&wstat);
 }
 
+void killme(int sig)
+{
+	signal(SIGINT, SIG_DFL);
+	kill(getpid(), SIGINT);
+}
 
 int main()
 {
@@ -74,6 +79,7 @@ int main()
 		}
 	}
 	signal(SIGCHLD, waitfor);
+	signal(SIGINT, killme);
 	int serv_tcp_port = SERV_TCP_PORT;
 	struct sockaddr_in cli_addr, serv_addr;
 	int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -90,7 +96,7 @@ int main()
 	while(1)
 	{
 		serv_addr.sin_port = htons(serv_tcp_port);
-		int bin = bind(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr));
+		int bin = bind(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
 		if(bin >= 0)break;
 		mv = (mv + 1) % 4;
 		switch(mv)
@@ -181,63 +187,138 @@ int main()
 			reply[cursor++] = destport / 256;
 			reply[cursor++] = destport % 256;
 			for(int i = 0; i < 4; i++)reply[cursor++] = destip[i];
-			write(newsock, reply, 8);
-			if(!permission)return 0;
-			struct sockaddr_in connect_addr;
-			bzero((char *) &connect_addr, sizeof(connect_addr));
-			connect_addr.sin_family = AF_INET;
-			connect_addr.sin_addr.s_addr = inet_addr(ss.str().c_str());
-			connect_addr.sin_port = htons(destport);
-			int connectfd = socket(AF_INET, SOCK_STREAM, 0);
-			if(connectfd < 0)
+			if(mode == 1)
 			{
-				cout << "[ERR] Cannot open web-server socket" << endl;
-				return 0;
-			}
-			while(connect(connectfd, (struct sockaddr *)&connect_addr, sizeof(connect_addr)) < 0)cout << "[ERR] Cannot connect to web-server " << errno << endl;
-			int nfds = getdtablesize();
-			fd_set rfds, afds;
-			FD_ZERO(&afds);
-			FD_SET(newsock, &afds);
-			FD_SET(connectfd, &afds);
-			char buffer[1024];
-			int size = 0;
-			while(1)
-			{
-				memcpy(&rfds, &afds, sizeof(&rfds));
-				if(select(nfds, &rfds, NULL, NULL, 0) < 0)
+				write(newsock, reply, 8);
+				if(!permission)return 0;
+				struct sockaddr_in connect_addr;
+				bzero((char *) &connect_addr, sizeof(connect_addr));
+				connect_addr.sin_family = AF_INET;
+				connect_addr.sin_addr.s_addr = inet_addr(ss.str().c_str());
+				connect_addr.sin_port = htons(destport);
+				int connectfd = socket(AF_INET, SOCK_STREAM, 0);
+				if(connectfd < 0)
 				{
-					cout << "[ERR] select error" << endl;
+					cout << "[ERR] Cannot open web-server socket" << endl;
 					return 0;
 				}
-				if(FD_ISSET(newsock, &rfds))
+				while(connect(connectfd, (struct sockaddr *)&connect_addr, sizeof(connect_addr)) < 0)cout << "[ERR] Cannot connect to web-server " << errno << endl;
+				int nfds = getdtablesize();
+				fd_set rfds, afds;
+				FD_ZERO(&afds);
+				FD_SET(newsock, &afds);
+				FD_SET(connectfd, &afds);
+				char buffer[1024];
+				int size = 0;
+				while(1)
 				{
-					bzero(buffer, 1024);
-					size = read(newsock, buffer, 1024);
-					if(size == 0)
+					memcpy(&rfds, &afds, sizeof(&rfds));
+					if(select(nfds, &rfds, NULL, NULL, 0) < 0)
 					{
-						cout << "[LOG] Client side ended" << endl;
-						break;
+						cout << "[ERR] select error" << endl;
+						return 0;
 					}
-					else if(size == -1)cout << "[ERR] Client read error:" << errno << endl;
-					else size = write(connectfd, buffer, size);
-				}
-				if(FD_ISSET(connectfd, &rfds))
-				{
-					bzero(buffer, 1024);
-					size = read(connectfd, buffer, 1024);
-					if(size == 0)
+					if(FD_ISSET(newsock, &rfds))
 					{
-						cout << "[LOG] Client side ended" << endl;
-						break;
+						bzero(buffer, 1024);
+						size = read(newsock, buffer, 1024);
+						if(size == 0)
+						{
+							cout << "[LOG] Client side ended" << endl;
+							break;
+						}
+						else if(size == -1)cout << "[ERR] Client read error:" << errno << endl;
+						else size = write(connectfd, buffer, size);
 					}
-					else if(size == -1)cout << "[ERR] Client read error:" << errno << endl;
-					else size = write(newsock, buffer, size);
+					if(FD_ISSET(connectfd, &rfds))
+					{
+						bzero(buffer, 1024);
+						size = read(connectfd, buffer, 1024);
+						if(size == 0)
+						{
+							cout << "[LOG] Client side ended" << endl;
+							break;
+						}
+						else if(size == -1)cout << "[ERR] Client read error:" << errno << endl;
+						else size = write(newsock, buffer, size);
+					}
 				}
+				close(connectfd);
+				close(newsock);
+				cout << "[LOG] closed socket" << endl;
 			}
-			close(connectfd);
-			close(newsock);
-			cout << "[LOG] closed socket" << endl;
+			else 
+			{
+				int bindfd;
+				struct sockaddr_in bind_addr;
+				bindfd = socket(AF_INET, SOCK_STREAM, 0);
+				bind_addr.sin_family = AF_INET;
+				bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+				bind_addr.sin_port = htons(0);
+				bind(bindfd, (struct sockaddr *)&bind_addr, sizeof(bind_addr));
+				struct sockaddr_in sockin_addr;
+				int someint;
+				getsockname(bindfd, (struct sockaddr *)&sockin_addr, (socklen_t *)&someint);
+				listen(bindfd, 5);
+				cursor = 0;
+				reply[cursor++] = 0;
+				reply[cursor++] = 90;
+				reply[cursor++] = (unsigned char)(ntohs(sockin_addr.sin_port) / 256);
+				reply[cursor++] = (unsigned char)(ntohs(sockin_addr.sin_port) % 256);
+				reply[cursor++] = 0;
+				reply[cursor++] = 0;
+				reply[cursor++] = 0;
+				reply[cursor++] = 0;
+				write(newsock, reply, 8);
+				if(!permission)return 0;
+				struct sockaddr newaddr;
+				unsigned int len = sizeof(newaddr);
+				int newsock2 = accept(bindfd, (struct sockaddr *)&newaddr, &len);
+				write(newsock, reply, 8);
+				int nfds = getdtablesize();
+				fd_set rfds, afds;
+				FD_ZERO(&afds);
+				FD_SET(newsock2, &afds);
+				FD_SET(newsock, &afds);
+				char buffer[1024];
+				int size = 0;
+				while(1)
+				{
+					memcpy(&rfds, &afds, sizeof(&rfds));
+					if(select(nfds, &rfds, NULL, NULL, 0) < 0)
+					{
+						cout << "[ERR] select error" << endl;
+						return 0;
+					}
+					if(FD_ISSET(newsock, &rfds))
+					{
+						bzero(buffer, 1024);
+						size = read(newsock, buffer, 1024);
+						if(size == 0)
+						{
+							cout << "[LOG] Client side ended" << endl;
+							break;
+						}
+						else if(size == -1)cout << "[ERR] Client read error:" << errno << endl;
+						else size = write(newsock2, buffer, size);
+					}
+					if(FD_ISSET(newsock2, &rfds))
+					{
+						bzero(buffer, 1024);
+						size = read(newsock2, buffer, 1024);
+						if(size == 0)
+						{
+							cout << "[LOG] Client side ended" << endl;
+							break;
+						}
+						else if(size == -1)cout << "[ERR] Client read error:" << errno << endl;
+						else size = write(newsock, buffer, size);
+					}
+				}
+				close(newsock2);
+				close(newsock);
+				cout << "[LOG] closed socket" << endl;
+			}
 			return 0;
 		}
 		close(newsock);
